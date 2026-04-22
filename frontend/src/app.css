@@ -1,0 +1,254 @@
+@import 'tailwindcss';
+@import '@xterm/xterm/css/xterm.css';
+@import 'katex/dist/katex.min.css';
+
+@theme {
+	--font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
+	--font-mono: 'SF Mono', 'JetBrains Mono', ui-monospace, Menlo, Monaco, Consolas, monospace;
+	--font-prose: 'Lora', 'Iowan Old Style', 'Charter', 'Georgia', 'Times New Roman', serif;
+
+	--color-bg: oklch(99% 0 0);
+	--color-bg-elev: oklch(100% 0 0);
+	--color-surface: oklch(97.5% 0 0);
+	--color-border: oklch(92% 0 0);
+	--color-text: oklch(20% 0 0);
+	--color-text-dim: oklch(52% 0 0);
+	--color-accent: oklch(58% 0.18 265);
+	--color-accent-soft: oklch(96% 0.02 265);
+
+	--ease-smooth: cubic-bezier(0.32, 0.72, 0, 1);
+	--radius-card: 12px;
+	--radius-input: 10px;
+}
+
+@media (prefers-color-scheme: dark) {
+	@theme {
+		--color-bg: oklch(14% 0 0);
+		--color-bg-elev: oklch(18% 0 0);
+		--color-surface: oklch(21% 0 0);
+		--color-border: oklch(28% 0 0);
+		--color-text: oklch(96% 0 0);
+		--color-text-dim: oklch(65% 0 0);
+		--color-accent: oklch(72% 0.18 265);
+		--color-accent-soft: oklch(25% 0.04 265);
+	}
+}
+
+html,
+body {
+	height: 100%;
+	background: var(--color-bg);
+	color: var(--color-text);
+	font-family: var(--font-sans);
+	-webkit-font-smoothing: antialiased;
+	text-rendering: optimizeLegibility;
+}
+
+::-webkit-scrollbar {
+	width: 8px;
+	height: 8px;
+}
+::-webkit-scrollbar-thumb {
+	background: var(--color-border);
+	border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+	background: var(--color-text-dim);
+}
+
+/* ---------- Obsidian-style markdown body ---------- */
+
+.md-body {
+	color: var(--color-text);
+	line-height: 1.65;
+	font-size: 14.5px;
+	word-wrap: break-word;
+}
+
+.md-body > *:first-child { margin-top: 0; }
+.md-body > *:last-child { margin-bottom: 0; }
+
+.md-body p { margin: 0.6em 0; }
+
+.md-body h1, .md-body h2, .md-body h3, .md-body h4, .md-body h5, .md-body h6 {
+	font-weight: 600;
+	line-height: 1.25;
+	letter-spacing: -0.015em;
+	margin: 1.4em 0 0.45em;
+	color: var(--color-text);
+}
+.md-body h1 { font-size: 1.8em; border-bottom: 1px solid var(--color-border); padding-bottom: 0.25em; margin-top: 0.7em; }
+.md-body h2 { font-size: 1.42em; border-bottom: 1px solid var(--color-border); padding-bottom: 0.2em; }
+.md-body h3 { font-size: 1.2em; }
+.md-body h4 { font-size: 1.05em; }
+.md-body h5 { font-size: 0.95em; color: var(--color-text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
+.md-body h6 { font-size: 0.85em; color: var(--color-text-dim); }
+
+.md-body a {
+	color: var(--color-accent);
+	text-decoration: none;
+	border-bottom: 1px solid color-mix(in oklab, var(--color-accent) 40%, transparent);
+	transition: border-color 120ms var(--ease-smooth);
+}
+.md-body a:hover { border-bottom-color: var(--color-accent); }
+
+.md-body strong { font-weight: 650; }
+.md-body em { font-style: italic; }
+.md-body del { opacity: 0.6; }
+
+.md-body ul, .md-body ol {
+	margin: 0.6em 0;
+	padding-left: 1.5em;
+}
+.md-body ul { list-style-type: disc; }
+.md-body ol { list-style-type: decimal; }
+.md-body li { margin: 0.25em 0; }
+.md-body li > p { margin: 0.3em 0; }
+
+.md-body input[type="checkbox"] { margin-right: 0.4em; vertical-align: middle; accent-color: var(--color-accent); }
+
+.md-body blockquote {
+	margin: 0.8em 0;
+	padding: 0.3em 1em;
+	border-left: 3px solid var(--color-border);
+	color: var(--color-text-dim);
+	background: color-mix(in oklab, var(--color-surface) 70%, transparent);
+	border-radius: 0 6px 6px 0;
+}
+.md-body blockquote p { margin: 0.3em 0; }
+
+.md-body hr {
+	border: 0;
+	border-top: 1px solid var(--color-border);
+	margin: 1.5em 0;
+}
+
+.md-body code {
+	font-family: var(--font-mono);
+	font-size: 0.88em;
+	background: var(--color-surface);
+	border: 1px solid var(--color-border);
+	padding: 0.12em 0.35em;
+	border-radius: 5px;
+}
+
+.md-body pre {
+	margin: 0.9em 0;
+	padding: 0;
+	border-radius: 10px;
+	overflow: hidden;
+	border: 1px solid var(--color-border);
+	background: var(--color-bg-elev);
+}
+.md-body pre code {
+	display: block;
+	background: transparent;
+	border: 0;
+	padding: 0.9em 1.1em;
+	font-size: 12.5px;
+	line-height: 1.55;
+	overflow-x: auto;
+}
+.md-body pre.shiki {
+	padding: 0.9em 1.1em;
+	font-size: 12.5px;
+	line-height: 1.55;
+	overflow-x: auto;
+}
+@media (prefers-color-scheme: dark) {
+	.md-body pre.shiki,
+	.md-body pre.shiki * { background: transparent !important; color: inherit; }
+	.md-body pre { background: oklch(16% 0 0); }
+}
+.md-body .shiki .line { display: block; min-height: 1.55em; }
+
+.md-body table {
+	border-collapse: collapse;
+	margin: 0.9em 0;
+	width: 100%;
+	font-size: 0.92em;
+}
+.md-body th, .md-body td {
+	border: 1px solid var(--color-border);
+	padding: 0.45em 0.7em;
+	text-align: left;
+}
+.md-body th {
+	background: var(--color-surface);
+	font-weight: 600;
+}
+
+.md-body img { max-width: 100%; border-radius: 8px; margin: 0.6em 0; }
+
+/* KaTeX spacing */
+.md-body .katex { font-size: 1.04em; }
+.md-body .katex-display { margin: 0.9em 0; padding: 0.3em 0; overflow-x: auto; overflow-y: hidden; }
+
+/* Obsidian callouts */
+.md-callout {
+	margin: 0.9em 0;
+	padding: 0.8em 1em;
+	border-radius: 8px;
+	border-left: 4px solid var(--callout-color, var(--color-accent));
+	background: color-mix(in oklab, var(--callout-color, var(--color-accent)) 8%, var(--color-bg-elev));
+	color: var(--color-text);
+}
+.md-callout-title {
+	font-weight: 600;
+	display: flex;
+	align-items: center;
+	gap: 0.5em;
+	margin-bottom: 0.3em;
+	color: var(--callout-color, var(--color-accent));
+	font-size: 0.95em;
+	letter-spacing: 0.005em;
+}
+.md-callout-icon { font-size: 1em; }
+.md-callout-body > *:first-child { margin-top: 0; }
+.md-callout-body > *:last-child { margin-bottom: 0; }
+.md-callout-body { font-size: 0.95em; }
+
+.md-callout-note, .md-callout-info { --callout-color: oklch(62% 0.12 240); }
+.md-callout-tip, .md-callout-hint { --callout-color: oklch(70% 0.14 170); }
+.md-callout-success, .md-callout-done { --callout-color: oklch(65% 0.16 145); }
+.md-callout-warning, .md-callout-caution { --callout-color: oklch(72% 0.17 75); }
+.md-callout-failure, .md-callout-danger, .md-callout-bug { --callout-color: oklch(60% 0.19 25); }
+.md-callout-question { --callout-color: oklch(65% 0.15 290); }
+.md-callout-example { --callout-color: oklch(63% 0.11 210); }
+.md-callout-quote { --callout-color: oklch(55% 0 0); }
+.md-callout-todo, .md-callout-abstract, .md-callout-summary { --callout-color: oklch(58% 0.13 195); }
+
+.md-body .md-skel {
+	display: inline-block;
+	width: 1em;
+	height: 1em;
+	border-radius: 50%;
+	background: var(--color-text-dim);
+	opacity: 0.4;
+	animation: md-pulse 1.2s infinite;
+}
+@keyframes md-pulse {
+	0%, 100% { opacity: 0.2; }
+	50% { opacity: 0.5; }
+}
+
+/* Variant: prose (Obsidian full-page reader) — used for .md viewer */
+.prose-obsidian {
+	max-width: 760px;
+	margin: 0 auto;
+	padding: 2.5rem 2.75rem;
+	font-family: var(--font-prose);
+	font-size: 16.5px;
+	line-height: 1.7;
+	color: var(--color-text);
+}
+.prose-obsidian .md-body {
+	font-family: var(--font-prose);
+	font-size: 16.5px;
+	line-height: 1.7;
+}
+.prose-obsidian .md-body h1 { font-size: 2.1em; }
+.prose-obsidian .md-body h2 { font-size: 1.6em; }
+.prose-obsidian .md-body h3 { font-size: 1.3em; }
+.prose-obsidian .md-body code,
+.prose-obsidian .md-body pre code { font-family: var(--font-mono); }
