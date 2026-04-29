@@ -32,6 +32,9 @@
 	let slashActive = $state(0);
 	let readerWidthPct = $state(50);
 	let dragging = $state(false);
+	let pastedImages = $state<
+		{ id: string; path: string; thumbUrl: string; uploading: boolean; error?: string }[]
+	>([]);
 
 	const active = $derived(chats.active);
 	const suggestions = $derived(matchCommands(text));
@@ -163,18 +166,75 @@
 		return lines.join('\n');
 	}
 
+	async function onPaste(e: ClipboardEvent) {
+		const items = e.clipboardData?.items;
+		if (!items) return;
+		const files: File[] = [];
+		for (const it of items) {
+			if (it.kind === 'file' && it.type.startsWith('image/')) {
+				const f = it.getAsFile();
+				if (f) files.push(f);
+			}
+		}
+		if (files.length === 0) return;
+		e.preventDefault();
+		const cwd = active?.cwd || defaultCwd || '';
+		for (const file of files) {
+			const id = crypto.randomUUID();
+			const thumbUrl = URL.createObjectURL(file);
+			pastedImages.push({ id, path: '', thumbUrl, uploading: true });
+			try {
+				const fd = new FormData();
+				fd.append('image', file);
+				fd.append('cwd', cwd);
+				const r = await fetch('/api/paste-image', { method: 'POST', body: fd });
+				if (!r.ok) throw new Error(`upload ${r.status}`);
+				const body = (await r.json()) as { path: string };
+				const entry = pastedImages.find((x) => x.id === id);
+				if (entry) {
+					entry.path = body.path;
+					entry.uploading = false;
+				}
+			} catch (err) {
+				console.error('[paste] upload failed', err);
+				const entry = pastedImages.find((x) => x.id === id);
+				if (entry) {
+					entry.uploading = false;
+					entry.error = String(err);
+				}
+			}
+		}
+	}
+
+	function removePastedImage(id: string) {
+		const entry = pastedImages.find((x) => x.id === id);
+		if (entry) URL.revokeObjectURL(entry.thumbUrl);
+		pastedImages = pastedImages.filter((x) => x.id !== id);
+	}
+
+	function clearPastedImages() {
+		for (const i of pastedImages) URL.revokeObjectURL(i.thumbUrl);
+		pastedImages = [];
+	}
+
 	function send() {
-		const prompt = text.trim();
-		if (!prompt || chats.inflight) return;
-		if (prompt.startsWith('/')) {
-			const exact = matchCommands(prompt).find((c) => c.trigger === prompt);
+		const body = text.trim();
+		const ready = pastedImages.filter((i) => i.path && !i.error);
+		if (!body && ready.length === 0) return;
+		if (chats.inflight) return;
+		if (pastedImages.some((i) => i.uploading)) return;
+		if (body.startsWith('/') && ready.length === 0) {
+			const exact = matchCommands(body).find((c) => c.trigger === body);
 			if (exact) {
 				executeCommand(exact);
 				return;
 			}
 		}
+		const refs = ready.map((i) => `![](${i.path})`).join('\n');
+		const prompt = refs ? (body ? `${refs}\n\n${body}` : refs) : body;
 		sendPrompt(prompt);
 		text = '';
+		clearPastedImages();
 		autosize(inputEl);
 	}
 
@@ -357,40 +417,99 @@
 							<SlashMenu items={suggestions} activeIndex={slashActive} onPick={executeCommand} />
 						{/if}
 						<div
-							class="rounded-[14px] flex items-end gap-2 p-2"
+							class="rounded-[14px] flex flex-col gap-1.5 p-2"
 							style:background="var(--color-surface)"
 							style:border="1px solid var(--color-border)"
 						>
-							<VoiceInput onTranscribed={onVoice} disabled={!groqConfigured} />
-							<textarea
-								bind:this={inputEl}
-								bind:value={text}
-								oninput={(e) => autosize(e.currentTarget)}
-								onkeydown={onKey}
-								placeholder={active
-									? `Ask in "${active.label}" — type / for commands`
-									: 'Create a chat to get started'}
-								disabled={!active}
-								rows="1"
-								class="flex-1 bg-transparent resize-none outline-none text-[14px] leading-6 px-2 py-1.5 disabled:opacity-50"
-								style:color="var(--color-text)"
-								style:min-height="36px"
-								style:max-height="220px"
-							></textarea>
+							{#if pastedImages.length > 0}
+								<div class="flex flex-wrap gap-1.5 px-1 pt-0.5">
+									{#each pastedImages as img (img.id)}
+										<div
+											class="relative group rounded-[8px] overflow-hidden"
+											style:border="1px solid var(--color-border)"
+											style:width="56px"
+											style:height="56px"
+										>
+											<img
+												src={img.thumbUrl}
+												alt="pasted"
+												class="w-full h-full object-cover"
+												style:opacity={img.uploading ? '0.5' : '1'}
+											/>
+											{#if img.uploading}
+												<div
+													class="absolute inset-0 flex items-center justify-center text-[9px] font-mono"
+													style:color="var(--color-text)"
+													style:background="rgba(0,0,0,0.25)"
+												>
+													…
+												</div>
+											{/if}
+											{#if img.error}
+												<div
+													class="absolute inset-0 flex items-center justify-center text-[9px] font-mono text-white"
+													style:background="rgba(220,38,38,0.8)"
+													title={img.error}
+												>
+													err
+												</div>
+											{/if}
+											<button
+												class="absolute top-0.5 right-0.5 size-4 rounded-full text-[10px] leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+												style:background="rgba(0,0,0,0.7)"
+												style:color="white"
+												onclick={() => removePastedImage(img.id)}
+												aria-label="Remove image"
+												title="Remove"
+											>
+												×
+											</button>
+										</div>
+									{/each}
+								</div>
+							{/if}
+							<div class="flex items-end gap-2">
+								<VoiceInput onTranscribed={onVoice} disabled={!groqConfigured} />
+								<textarea
+									bind:this={inputEl}
+									bind:value={text}
+									oninput={(e) => autosize(e.currentTarget)}
+									onkeydown={onKey}
+									onpaste={onPaste}
+									placeholder={active
+										? `Ask in "${active.label}" — type / for commands, paste images with Ctrl+V`
+										: 'Create a chat to get started'}
+									disabled={!active}
+									rows="1"
+									class="flex-1 bg-transparent resize-none outline-none text-[14px] leading-6 px-2 py-1.5 disabled:opacity-50"
+									style:color="var(--color-text)"
+									style:min-height="36px"
+									style:max-height="220px"
+								></textarea>
 							<button
 								class="size-9 rounded-[10px] flex items-center justify-center transition-all"
-								style:background={text.trim() && !chats.inflight && active
+								style:background={(text.trim() || pastedImages.some((i) => i.path && !i.error)) &&
+								!chats.inflight &&
+								!pastedImages.some((i) => i.uploading) &&
+								active
 									? 'var(--color-accent)'
 									: 'var(--color-border)'}
-								style:color={text.trim() && !chats.inflight && active
+								style:color={(text.trim() || pastedImages.some((i) => i.path && !i.error)) &&
+								!chats.inflight &&
+								!pastedImages.some((i) => i.uploading) &&
+								active
 									? 'white'
 									: 'var(--color-text-dim)'}
-								disabled={!text.trim() || chats.inflight || !active}
+								disabled={(!text.trim() && !pastedImages.some((i) => i.path && !i.error)) ||
+									chats.inflight ||
+									pastedImages.some((i) => i.uploading) ||
+									!active}
 								onclick={send}
 								aria-label="Send"
 							>
 								<Send class="size-4" />
 							</button>
+							</div>
 						</div>
 					</div>
 					<div class="mx-auto max-w-3xl pt-1.5 text-[10px] opacity-50 font-mono text-center">

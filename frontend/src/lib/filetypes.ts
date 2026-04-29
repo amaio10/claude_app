@@ -38,7 +38,8 @@ export const EXT_LANG: Record<string, string> = {
 	rb: 'ruby',
 	php: 'php',
 	diff: 'diff',
-	patch: 'diff'
+	patch: 'diff',
+	tex: 'latex'
 };
 
 // filenames without extensions
@@ -93,4 +94,8 @@ export function isViewable(isDir: boolean, name: string, ext?: string | null): b
 
 export function isMarkdown(ext?: string | null): boolean {
 	return ext === 'md' || ext === 'markdown' || ext === 'mdx';
+}
+
+export function isTex(ext?: string | null): boolean {
+	return ext === 'tex';
 }

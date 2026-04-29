@@ -15,13 +15,17 @@
 	import Check from 'lucide-svelte/icons/check';
 	import CircleAlert from 'lucide-svelte/icons/circle-alert';
 	import Loader from 'lucide-svelte/icons/loader-circle';
+	import Play from 'lucide-svelte/icons/play';
+	import Download from 'lucide-svelte/icons/download';
 	import { renderMarkdown } from './markdown';
 	import { codeToHtml } from './highlighter';
-	import { isMarkdown, isMesh, isImage, isData, langFor } from './filetypes';
+	import { isMarkdown, isMesh, isImage, isData, isTex, langFor } from './filetypes';
 	import StlViewer from './StlViewer.svelte';
 	import ImageViewer from './ImageViewer.svelte';
 	import CsvViewer from './CsvViewer.svelte';
 	import MarkdownEditor, { type EditorApi } from './MarkdownEditor.svelte';
+	import TexEditor, { type TexEditorApi } from './TexEditor.svelte';
+	import PdfViewer from './PdfViewer.svelte';
 
 	type Props = {
 		path: string;
@@ -37,13 +41,66 @@
 	let loading = $state(false);
 	let errMsg = $state('');
 	let lang = $state<string | null>(null);
-	let kind = $state<'markdown' | 'code' | 'mesh' | 'image' | 'csv'>('markdown');
+	let kind = $state<'markdown' | 'code' | 'mesh' | 'image' | 'csv' | 'tex'>('markdown');
 	let wrap = $state(false);
 	let copied = $state(false);
 	let saveStatus = $state<'idle' | 'dirty' | 'saving' | 'saved' | 'error'>('idle');
 	let saveMsg = $state('');
 	let lastSavedAt = $state<number | null>(null);
 	let editorApi = $state<EditorApi | null>(null);
+	let texApi = $state<TexEditorApi | null>(null);
+
+	// TeX compile state
+	let texCompiling = $state(false);
+	let texHasPdf = $state(false);
+	let texPdfVersion = $state(0);
+	let texLog = $state('');
+	let texCompileError = $state(false);
+	let texShowLog = $state(false);
+
+	// TeX split (editor | pdf) — persisted
+	const TEX_SPLIT_KEY = 'tex-split-ratio';
+	let texSplitRatio = $state(0.5);
+	let texSplitEl: HTMLDivElement | null = $state(null);
+	let texDragging = $state(false);
+	$effect(() => {
+		if (typeof localStorage === 'undefined') return;
+		const v = parseFloat(localStorage.getItem(TEX_SPLIT_KEY) || '');
+		if (!isNaN(v) && v > 0.1 && v < 0.9) texSplitRatio = v;
+	});
+
+	function onSplitPointerDown(e: PointerEvent) {
+		if (!texSplitEl) return;
+		texDragging = true;
+		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+		e.preventDefault();
+	}
+	function onSplitPointerMove(e: PointerEvent) {
+		if (!texDragging || !texSplitEl) return;
+		const rect = texSplitEl.getBoundingClientRect();
+		const MIN_PX = 220;
+		const x = e.clientX - rect.left;
+		const clamped = Math.max(MIN_PX, Math.min(rect.width - MIN_PX, x));
+		texSplitRatio = clamped / rect.width;
+	}
+	function onSplitPointerUp(e: PointerEvent) {
+		if (!texDragging) return;
+		texDragging = false;
+		try {
+			(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+		} catch {
+			// ignore
+		}
+		if (typeof localStorage !== 'undefined') {
+			localStorage.setItem(TEX_SPLIT_KEY, String(texSplitRatio));
+		}
+	}
+	function onSplitDoubleClick() {
+		texSplitRatio = 0.5;
+		if (typeof localStorage !== 'undefined') {
+			localStorage.setItem(TEX_SPLIT_KEY, '0.5');
+		}
+	}
 
 	function relativeTime(ts: number): string {
 		const d = Math.max(0, Math.floor((Date.now() - ts) / 1000));
@@ -55,7 +112,7 @@
 
 	let nowTick = $state(Date.now());
 	$effect(() => {
-		if (mode !== 'edit') return;
+		if (mode !== 'edit' && kind !== 'tex') return;
 		const id = setInterval(() => (nowTick = Date.now()), 10_000);
 		return () => clearInterval(id);
 	});
@@ -65,11 +122,15 @@
 	});
 
 	function handleSaveKeydown(e: KeyboardEvent) {
-		if (mode !== 'edit') return;
 		const isSave = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's';
 		if (!isSave) return;
-		e.preventDefault();
-		void editorApi?.flush();
+		if (kind === 'markdown' && mode === 'edit') {
+			e.preventDefault();
+			void editorApi?.flush();
+		} else if (kind === 'tex') {
+			e.preventDefault();
+			void texApi?.flush();
+		}
 	}
 
 	const name = $derived(path.split('/').filter(Boolean).slice(-1)[0] || path);
@@ -83,6 +144,12 @@
 	async function load(p: string) {
 		loading = true;
 		errMsg = '';
+		// reset per-file tex state
+		texHasPdf = false;
+		texPdfVersion = 0;
+		texLog = '';
+		texCompileError = false;
+		texShowLog = false;
 		try {
 			const base = p.split('/').pop() || '';
 			const ext = (base.split('.').pop() || '').toLowerCase();
@@ -131,6 +198,9 @@
 			if (isMarkdown(ext)) {
 				kind = 'markdown';
 				html = await renderMarkdown(data.content);
+			} else if (isTex(ext)) {
+				kind = 'tex';
+				html = '';
 			} else {
 				kind = 'code';
 				html = await codeToHtml(data.content, detectedLang, {
@@ -161,12 +231,78 @@
 	}
 
 	$effect(() => {
-		if (mode !== 'edit') return;
+		if (mode !== 'edit' && kind !== 'tex') return;
 		window.addEventListener('keydown', handleSaveKeydown, { capture: true });
 		return () => window.removeEventListener('keydown', handleSaveKeydown, { capture: true });
 	});
 
-	const isDarkChrome = $derived(kind === 'code' || kind === 'mesh' || kind === 'image');
+	const isDarkChrome = $derived(
+		kind === 'code' || kind === 'mesh' || kind === 'image' || kind === 'tex'
+	);
+
+	async function recompileTex() {
+		if (texCompiling) return;
+		// flush any pending save first so tectonic sees the latest content
+		if (texApi) await texApi.flush();
+		texCompiling = true;
+		texCompileError = false;
+		try {
+			const r = await fetch('/api/tex/compile', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ path })
+			});
+			if (!r.ok) {
+				texCompileError = true;
+				texLog = await r.text();
+				texShowLog = true;
+				return;
+			}
+			const data = (await r.json()) as { ok: boolean; pdf_path: string | null; log: string };
+			texLog = data.log || '';
+			if (data.ok) {
+				texHasPdf = true;
+				texPdfVersion = Date.now();
+				texCompileError = false;
+				texShowLog = false;
+			} else {
+				texCompileError = true;
+				texShowLog = true;
+			}
+		} catch (e) {
+			texCompileError = true;
+			texLog = (e as Error).message;
+			texShowLog = true;
+		} finally {
+			texCompiling = false;
+		}
+	}
+
+	async function savePdfAs() {
+		if (!texHasPdf) return;
+		try {
+			const r = await fetch(
+				`/api/tex/pdf?path=${encodeURIComponent(path)}&v=${texPdfVersion}`
+			);
+			if (!r.ok) return;
+			const blob = await r.blob();
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			const stem = (name || 'document').replace(/\.tex$/i, '');
+			a.download = `${stem}.pdf`;
+			document.body.appendChild(a);
+			a.click();
+			a.remove();
+			setTimeout(() => URL.revokeObjectURL(url), 2000);
+		} catch (e) {
+			console.error('[save-pdf]', e);
+		}
+	}
+
+	const pdfSrc = $derived(
+		texHasPdf ? `/api/tex/pdf?path=${encodeURIComponent(path)}&v=${texPdfVersion}` : ''
+	);
 </script>
 
 <div
@@ -182,7 +318,7 @@
 		style:background={isDarkChrome ? '#161b22' : 'var(--color-bg-elev)'}
 	>
 		<div class="flex items-center gap-2 min-w-0">
-			{#if kind === 'code'}
+			{#if kind === 'code' || kind === 'tex'}
 				<FileCode class="size-4 opacity-70 shrink-0" />
 			{:else if kind === 'mesh'}
 				<Box class="size-4 opacity-70 shrink-0" />
@@ -304,6 +440,61 @@
 				>
 					<Copy class="size-3.5" />
 				</button>
+			{:else if kind === 'tex'}
+				<div
+					class="save-pill"
+					class:save-saving={saveStatus === 'saving'}
+					class:save-saved={saveStatus === 'saved' || saveStatus === 'idle'}
+					class:save-dirty={saveStatus === 'dirty'}
+					class:save-error={saveStatus === 'error'}
+					title={saveStatus === 'error' ? saveMsg : 'Auto-save is on'}
+				>
+					{#if saveStatus === 'saving'}
+						<Loader class="size-3 spin" />
+						<span>Saving…</span>
+					{:else if saveStatus === 'dirty'}
+						<span class="dot"></span>
+						<span>Unsaved</span>
+					{:else if saveStatus === 'error'}
+						<CircleAlert class="size-3" />
+						<span>Save failed</span>
+					{:else if saveStatus === 'saved' && lastSavedAt}
+						<Check class="size-3" />
+						<span>Saved {savedLabel}</span>
+					{:else}
+						<Check class="size-3 opacity-60" />
+						<span>Auto-save on</span>
+					{/if}
+				</div>
+				<button
+					class="h-7 px-2 rounded-md text-[11px] font-medium flex items-center gap-1 tex-btn"
+					onclick={() => void texApi?.flush()}
+					disabled={saveStatus === 'saving'}
+					title="Save .tex now (Ctrl/Cmd+S)"
+				>
+					<Save class="size-3" /> Save
+				</button>
+				<button
+					class="h-7 px-2 rounded-md text-[11px] font-medium flex items-center gap-1 tex-btn-primary"
+					onclick={recompileTex}
+					disabled={texCompiling}
+					title="Compile with tectonic"
+				>
+					{#if texCompiling}
+						<Loader class="size-3 spin" />
+						Compiling…
+					{:else}
+						<Play class="size-3" /> Recompile
+					{/if}
+				</button>
+				<button
+					class="h-7 px-2 rounded-md text-[11px] font-medium flex items-center gap-1 tex-btn"
+					onclick={savePdfAs}
+					disabled={!texHasPdf}
+					title={texHasPdf ? 'Download PDF' : 'Compile first'}
+				>
+					<Download class="size-3" /> Save as PDF
+				</button>
 			{/if}
 			<button
 				class="size-7 rounded-md flex items-center justify-center"
@@ -365,6 +556,74 @@
 			<ImageViewer {path} />
 		{:else if kind === 'csv'}
 			<CsvViewer {path} />
+		{:else if kind === 'tex'}
+			<div
+				bind:this={texSplitEl}
+				class="tex-split"
+				class:tex-split-dragging={texDragging}
+				style:--tex-left={`${(texSplitRatio * 100).toFixed(3)}%`}
+			>
+				<div class="tex-pane tex-left">
+					{#key path}
+						<TexEditor
+							{path}
+							initial={rawContent}
+							onStatus={(s, m) => {
+								saveStatus = s;
+								saveMsg = m ?? '';
+								if (s === 'saved') lastSavedAt = Date.now();
+							}}
+							onContentChange={(txt) => (rawContent = txt)}
+							onReady={(api) => (texApi = api)}
+						/>
+					{/key}
+				</div>
+				<div
+					class="tex-gutter"
+					role="separator"
+					aria-orientation="vertical"
+					aria-label="Resize editor / PDF"
+					title="Drag to resize · double-click to reset"
+					onpointerdown={onSplitPointerDown}
+					onpointermove={onSplitPointerMove}
+					onpointerup={onSplitPointerUp}
+					onpointercancel={onSplitPointerUp}
+					ondblclick={onSplitDoubleClick}
+				></div>
+				<div class="tex-pane tex-right">
+					{#if texHasPdf}
+						{#key pdfSrc}
+							<PdfViewer src={pdfSrc} />
+						{/key}
+					{:else}
+						<div class="tex-empty">
+							{#if texCompiling}
+								<Loader class="size-4 spin opacity-70" />
+								<span>Compiling…</span>
+							{:else if texCompileError}
+								<span class="tex-err-icon"><CircleAlert class="size-4" /></span>
+								<span>Compile failed — see log below.</span>
+							{:else}
+								<Play class="size-4 opacity-70" />
+								<span>Hit <b>Recompile</b> to render the PDF.</span>
+							{/if}
+						</div>
+					{/if}
+					{#if texLog && (texShowLog || texCompileError)}
+						<div class="tex-log-wrap">
+							<div class="tex-log-head">
+								<span>tectonic log</span>
+								<button
+									class="tex-log-close"
+									onclick={() => (texShowLog = false)}
+									title="Hide log"
+								>×</button>
+							</div>
+							<pre class="tex-log">{texLog}</pre>
+						</div>
+					{/if}
+				</div>
+			</div>
 		{:else}
 			<div class="code-view" class:code-view-wrap={wrap}>
 				<div class="code-scroll">{@html html}</div>
@@ -583,5 +842,149 @@
 		to {
 			transform: rotate(360deg);
 		}
+	}
+
+	.tex-split {
+		flex: 1;
+		min-height: 0;
+		display: grid;
+		grid-template-columns: minmax(0, var(--tex-left, 50%)) 6px minmax(0, 1fr);
+		background: #21262d;
+	}
+	.tex-split-dragging {
+		cursor: col-resize;
+		user-select: none;
+	}
+	.tex-split-dragging :global(*) {
+		user-select: none !important;
+	}
+	.tex-gutter {
+		position: relative;
+		background: #21262d;
+		cursor: col-resize;
+		touch-action: none;
+	}
+	.tex-gutter::before {
+		content: '';
+		position: absolute;
+		inset: 0;
+		left: -3px;
+		right: -3px;
+	}
+	.tex-gutter::after {
+		content: '';
+		position: absolute;
+		left: 50%;
+		top: 50%;
+		width: 2px;
+		height: 28px;
+		background: #30363d;
+		transform: translate(-50%, -50%);
+		border-radius: 1px;
+		transition: background 0.12s ease;
+	}
+	.tex-gutter:hover::after {
+		background: #58a6ff;
+	}
+	.tex-split-dragging .tex-gutter::after {
+		background: #58a6ff;
+	}
+	.tex-pane {
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+		min-width: 0;
+		background: #24292e;
+		overflow: hidden;
+	}
+	.tex-right {
+		background: #1b1f24;
+		position: relative;
+	}
+	.tex-empty {
+		flex: 1;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+		color: #8b949e;
+		font-size: 13px;
+	}
+	.tex-log-wrap {
+		position: absolute;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		max-height: 45%;
+		display: flex;
+		flex-direction: column;
+		background: #161b22;
+		border-top: 1px solid #30363d;
+		z-index: 2;
+	}
+	.tex-log-head {
+		height: 26px;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 0 10px;
+		font-size: 10px;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: #8b949e;
+		background: #0d1117;
+		border-bottom: 1px solid #21262d;
+	}
+	.tex-log-close {
+		background: transparent;
+		border: 0;
+		color: #8b949e;
+		font-size: 14px;
+		line-height: 1;
+		padding: 0 4px;
+		cursor: pointer;
+	}
+	.tex-log-close:hover {
+		color: #e1e4e8;
+	}
+	.tex-log {
+		margin: 0;
+		padding: 10px 12px;
+		overflow: auto;
+		color: #c9d1d9;
+		font-family: var(--font-mono);
+		font-size: 11px;
+		line-height: 1.5;
+		white-space: pre-wrap;
+		word-break: break-word;
+	}
+
+	.tex-btn {
+		background: #21262d;
+		color: #c9d1d9;
+		border: 1px solid #30363d;
+	}
+	.tex-btn:hover:not(:disabled) {
+		background: #30363d;
+	}
+	.tex-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+	.tex-btn-primary {
+		background: #238636;
+		color: white;
+		border: 1px solid transparent;
+	}
+	.tex-btn-primary:hover:not(:disabled) {
+		background: #2ea043;
+	}
+	.tex-btn-primary:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+	.tex-err-icon {
+		display: inline-flex;
+		color: #f85149;
 	}
 </style>

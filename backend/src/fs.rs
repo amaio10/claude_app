@@ -272,8 +272,13 @@ pub async fn write_file(
         .and_then(|e| e.to_str())
         .map(|s| s.to_ascii_lowercase());
     match ext.as_deref() {
-        Some("md") | Some("markdown") | Some("mdx") => {}
-        _ => return Err((StatusCode::BAD_REQUEST, "only markdown files are editable".into())),
+        Some("md") | Some("markdown") | Some("mdx") | Some("tex") => {}
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "only markdown and .tex files are editable".into(),
+            ))
+        }
     }
 
     let bytes = body.content.len() as u64;
@@ -301,7 +306,7 @@ pub async fn write_file(
         return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("rename: {e}")));
     }
 
-    info!(path = %canon.display(), bytes, "wrote markdown");
+    info!(path = %canon.display(), bytes, "wrote file");
 
     Ok(Json(WriteResp {
         path: canon.to_string_lossy().to_string(),

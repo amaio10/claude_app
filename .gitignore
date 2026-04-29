@@ -8,3 +8,4 @@ build/
 .svelte-kit/
 *.log
 .DS_Store
+pastes/

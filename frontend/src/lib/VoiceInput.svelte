@@ -2,6 +2,7 @@
 	import Mic from 'lucide-svelte/icons/mic';
 	import Square from 'lucide-svelte/icons/square';
 	import Loader2 from 'lucide-svelte/icons/loader-2';
+	import workletUrl from '$lib/audio-recorder-worklet.js?url';
 
 	type Props = {
 		onTranscribed: (text: string) => void;
@@ -10,13 +11,23 @@
 	let { onTranscribed, disabled = false }: Props = $props();
 
 	let recState = $state<'idle' | 'recording' | 'transcribing'>('idle');
-	let recorder: MediaRecorder | null = null;
-	let chunks: BlobPart[] = [];
-	let audioCtx: AudioContext | null = null;
-	let analyser: AnalyserNode | null = null;
-	let rafId = 0;
 	let levels = $state<number[]>(Array(28).fill(0.05));
+
+	const CHUNK_SECONDS = 15;
+	const MIN_TAIL_RATIO = 0.02;
+
+	let audioCtx: AudioContext | null = null;
+	let sourceNode: MediaStreamAudioSourceNode | null = null;
+	let analyser: AnalyserNode | null = null;
+	let workletNode: AudioWorkletNode | null = null;
 	let sourceStream: MediaStream | null = null;
+	let rafId = 0;
+
+	let sampleRate = 48000;
+	let chunkSamples = 0;
+	let pendingFrames: Float32Array[] = [];
+	let pendingCount = 0;
+	let chunkPromises: Promise<string>[] = [];
 
 	async function start() {
 		if (recState !== 'idle' || disabled) return;
@@ -29,30 +40,36 @@
 				}
 			});
 			sourceStream = stream;
-			chunks = [];
-			const mimeCandidates = [
-				'audio/webm;codecs=opus',
-				'audio/webm',
-				'audio/mp4',
-				'audio/ogg;codecs=opus'
-			];
-			const mime = mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m)) || '';
-			recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
-			recorder.ondataavailable = (e) => {
-				if (e.data.size > 0) chunks.push(e.data);
+
+			audioCtx = new AudioContext();
+			sampleRate = audioCtx.sampleRate;
+			chunkSamples = Math.floor(sampleRate * CHUNK_SECONDS);
+			pendingFrames = [];
+			pendingCount = 0;
+			chunkPromises = [];
+
+			await audioCtx.audioWorklet.addModule(workletUrl);
+
+			sourceNode = audioCtx.createMediaStreamSource(stream);
+			analyser = audioCtx.createAnalyser();
+			analyser.fftSize = 64;
+			sourceNode.connect(analyser);
+
+			workletNode = new AudioWorkletNode(audioCtx, 'recorder-processor');
+			workletNode.port.onmessage = (e) => {
+				const frame = e.data as Float32Array;
+				pendingFrames.push(frame);
+				pendingCount += frame.length;
+				while (pendingCount >= chunkSamples) flushChunk(chunkSamples);
 			};
-			recorder.onstop = async () => {
-				const blob = new Blob(chunks, { type: recorder?.mimeType || 'audio/webm' });
-				stopMeter();
-				await send(blob);
-			};
-			recorder.start(250);
-			startMeter(stream);
+			sourceNode.connect(workletNode);
+
+			startMeter();
 			recState = 'recording';
-			console.log('[voice] recording with mime', recorder.mimeType);
+			console.log(`[voice] recording at ${sampleRate}Hz, slicing every ${CHUNK_SECONDS}s`);
 		} catch (e) {
 			const err = e as DOMException;
-			console.error('[voice] getUserMedia failed', err.name, err.message, err);
+			console.error('[voice] start failed', err.name, err.message, err);
 			const hints: Record<string, string> = {
 				NotAllowedError: 'Permission refused. Click the 🔒 in the URL bar → Microphone → Allow, then reload.',
 				NotFoundError: 'No microphone detected. Plug one in and reload.',
@@ -63,22 +80,38 @@
 			};
 			const hint = hints[err.name] ?? err.message ?? 'Unknown error';
 			alert(`Mic error (${err.name}): ${hint}`);
+			cleanup();
 		}
 	}
 
-	function stop() {
-		if (recState !== 'recording') return;
-		recorder?.stop();
-		sourceStream?.getTracks().forEach((t) => t.stop());
-		recState = 'transcribing';
+	function flushChunk(samples: number) {
+		if (samples <= 0) return;
+		const out = new Float32Array(samples);
+		let written = 0;
+		while (written < samples && pendingFrames.length > 0) {
+			const head = pendingFrames[0];
+			const need = samples - written;
+			if (head.length <= need) {
+				out.set(head, written);
+				written += head.length;
+				pendingFrames.shift();
+			} else {
+				out.set(head.subarray(0, need), written);
+				pendingFrames[0] = head.subarray(need);
+				written += need;
+			}
+		}
+		pendingCount -= samples;
+		const idx = chunkPromises.length;
+		const wav = encodeWav(out, sampleRate);
+		chunkPromises.push(transcribeChunk(wav, idx));
 	}
 
-	async function send(blob: Blob) {
-		const ext = (blob.type.split('/')[1] || 'webm').split(';')[0];
+	async function transcribeChunk(blob: Blob, idx: number): Promise<string> {
 		const form = new FormData();
-		form.append('audio', blob, `rec.${ext}`);
+		form.append('audio', blob, `chunk-${idx}.wav`);
+		const t0 = performance.now();
 		try {
-			const t0 = performance.now();
 			const r = await fetch('/api/transcribe', { method: 'POST', body: form });
 			const ms = Math.round(performance.now() - t0);
 			if (!r.ok) {
@@ -86,34 +119,96 @@
 				throw new Error(`${r.status} ${err}`);
 			}
 			const data = await r.json();
-			console.log(`[voice] transcribed in ${ms}ms:`, data.text);
-			onTranscribed(data.text);
+			console.log(`[voice] chunk ${idx} → ${data.text.length} chars in ${ms}ms`);
+			return data.text;
 		} catch (e) {
-			console.error('[voice] transcribe failed', e);
-			alert(`Transcription failed: ${(e as Error).message}`);
+			console.error(`[voice] chunk ${idx} failed`, e);
+			return '';
+		}
+	}
+
+	async function stop() {
+		if (recState !== 'recording') return;
+		recState = 'transcribing';
+
+		try { sourceNode?.disconnect(); } catch {}
+		try { workletNode?.disconnect(); } catch {}
+		sourceStream?.getTracks().forEach((t) => t.stop());
+
+		const minTail = Math.floor(chunkSamples * MIN_TAIL_RATIO);
+		if (pendingCount > minTail) flushChunk(pendingCount);
+		else { pendingFrames = []; pendingCount = 0; }
+
+		stopMeter();
+
+		try {
+			const texts = await Promise.all(chunkPromises);
+			const joined = texts.map((s) => s.trim()).filter(Boolean).join(' ');
+			console.log(`[voice] ${chunkPromises.length} chunks → ${joined.length} chars`);
+			if (joined) onTranscribed(joined);
 		} finally {
+			cleanup();
 			recState = 'idle';
 		}
 	}
 
-	function startMeter(stream: MediaStream) {
-		audioCtx = new AudioContext();
-		analyser = audioCtx.createAnalyser();
-		analyser.fftSize = 64;
-		const src = audioCtx.createMediaStreamSource(stream);
-		src.connect(analyser);
+	function cleanup() {
+		try { workletNode?.port.close(); } catch {}
+		workletNode = null;
+		sourceNode = null;
+		analyser = null;
+		if (audioCtx && audioCtx.state !== 'closed') audioCtx.close().catch(() => {});
+		audioCtx = null;
+		sourceStream = null;
+		pendingFrames = [];
+		pendingCount = 0;
+		chunkPromises = [];
+	}
+
+	function encodeWav(samples: Float32Array, sr: number): Blob {
+		const len = samples.length;
+		const buf = new ArrayBuffer(44 + len * 2);
+		const view = new DataView(buf);
+		writeStr(view, 0, 'RIFF');
+		view.setUint32(4, 36 + len * 2, true);
+		writeStr(view, 8, 'WAVE');
+		writeStr(view, 12, 'fmt ');
+		view.setUint32(16, 16, true);
+		view.setUint16(20, 1, true);
+		view.setUint16(22, 1, true);
+		view.setUint32(24, sr, true);
+		view.setUint32(28, sr * 2, true);
+		view.setUint16(32, 2, true);
+		view.setUint16(34, 16, true);
+		writeStr(view, 36, 'data');
+		view.setUint32(40, len * 2, true);
+		let off = 44;
+		for (let i = 0; i < len; i++) {
+			const s = Math.max(-1, Math.min(1, samples[i]));
+			view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+			off += 2;
+		}
+		return new Blob([buf], { type: 'audio/wav' });
+	}
+
+	function writeStr(view: DataView, off: number, str: string) {
+		for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i));
+	}
+
+	function startMeter() {
+		if (!analyser) return;
 		const buf = new Uint8Array(analyser.frequencyBinCount);
 		const loop = () => {
 			if (!analyser) return;
 			analyser.getByteFrequencyData(buf);
-			const nextLevels: number[] = [];
-			const step = Math.floor(buf.length / levels.length);
+			const next: number[] = [];
+			const step = Math.max(1, Math.floor(buf.length / levels.length));
 			for (let i = 0; i < levels.length; i++) {
 				let sum = 0;
-				for (let j = 0; j < step; j++) sum += buf[i * step + j];
-				nextLevels.push(Math.min(1, sum / (step * 255) + 0.05));
+				for (let j = 0; j < step; j++) sum += buf[i * step + j] || 0;
+				next.push(Math.min(1, sum / (step * 255) + 0.05));
 			}
-			levels = nextLevels;
+			levels = next;
 			rafId = requestAnimationFrame(loop);
 		};
 		loop();
@@ -122,9 +217,6 @@
 	function stopMeter() {
 		if (rafId) cancelAnimationFrame(rafId);
 		rafId = 0;
-		analyser = null;
-		if (audioCtx && audioCtx.state !== 'closed') audioCtx.close();
-		audioCtx = null;
 		levels = Array(28).fill(0.05);
 	}
 

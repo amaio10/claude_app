@@ -1,13 +1,15 @@
 mod claude;
 mod fs;
+mod paste;
 mod pty;
 mod state;
+mod tex;
 mod transcribe;
 
 use std::net::SocketAddr;
 
 use axum::{
-    extract::{Multipart, State, WebSocketUpgrade},
+    extract::{DefaultBodyLimit, Multipart, State, WebSocketUpgrade},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -166,12 +168,18 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/api/health", get(health))
         .route("/api/prompt", post(prompt_handler))
-        .route("/api/transcribe", post(transcribe_handler))
+        .route(
+            "/api/transcribe",
+            post(transcribe_handler).layer(DefaultBodyLimit::max(50 * 1024 * 1024)),
+        )
+        .route("/api/paste-image", post(paste::paste_image))
         .route("/api/fs/list", get(fs::list_dir))
         .route("/api/fs/home", get(fs::home_dir))
         .route("/api/fs/read", get(fs::read_file))
         .route("/api/fs/raw", get(fs::raw_file))
         .route("/api/fs/write", post(fs::write_file))
+        .route("/api/tex/compile", post(tex::compile))
+        .route("/api/tex/pdf", get(tex::pdf))
         .route("/ws", get(prompt_ws))
         .route("/pty", get(pty_ws))
         .route("/api/pty/sessions", get(list_pty_sessions))
