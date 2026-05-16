@@ -362,6 +362,7 @@ pub async fn raw_file(Query(q): Query<ReadQuery>) -> Result<Response, (StatusCod
         Some("bmp") => "image/bmp",
         Some("ico") => "image/x-icon",
         Some("svg") => "image/svg+xml",
+        Some("pdf") => "application/pdf",
         _ => "application/octet-stream",
     };
 

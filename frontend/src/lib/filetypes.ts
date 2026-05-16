@@ -88,7 +88,7 @@ export function isData(ext?: string | null): boolean {
 
 export function isViewable(isDir: boolean, name: string, ext?: string | null): boolean {
 	if (isDir) return true;
-	if (isMesh(ext) || isImage(ext) || isData(ext)) return true;
+	if (isMesh(ext) || isImage(ext) || isData(ext) || isPdf(ext)) return true;
 	return langFor(name, ext) != null;
 }
 
@@ -98,4 +98,8 @@ export function isMarkdown(ext?: string | null): boolean {
 
 export function isTex(ext?: string | null): boolean {
 	return ext === 'tex';
+}
+
+export function isPdf(ext?: string | null): boolean {
+	return ext === 'pdf';
 }

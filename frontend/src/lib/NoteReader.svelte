@@ -19,7 +19,7 @@
 	import Download from 'lucide-svelte/icons/download';
 	import { renderMarkdown } from './markdown';
 	import { codeToHtml } from './highlighter';
-	import { isMarkdown, isMesh, isImage, isData, isTex, langFor } from './filetypes';
+	import { isMarkdown, isMesh, isImage, isData, isTex, isPdf, langFor } from './filetypes';
 	import StlViewer from './StlViewer.svelte';
 	import ImageViewer from './ImageViewer.svelte';
 	import CsvViewer from './CsvViewer.svelte';
@@ -41,7 +41,7 @@
 	let loading = $state(false);
 	let errMsg = $state('');
 	let lang = $state<string | null>(null);
-	let kind = $state<'markdown' | 'code' | 'mesh' | 'image' | 'csv' | 'tex'>('markdown');
+	let kind = $state<'markdown' | 'code' | 'mesh' | 'image' | 'csv' | 'tex' | 'pdf'>('markdown');
 	let wrap = $state(false);
 	let copied = $state(false);
 	let saveStatus = $state<'idle' | 'dirty' | 'saving' | 'saved' | 'error'>('idle');
@@ -178,6 +178,16 @@
 				kind = 'csv';
 				lang = ext;
 				rawContent = '';
+				html = '';
+				return;
+			}
+
+			if (isPdf(ext)) {
+				kind = 'pdf';
+				lang = ext;
+				rawContent = '';
+				truncated = false;
+				size = 0;
 				html = '';
 				return;
 			}
@@ -556,6 +566,10 @@
 			<ImageViewer {path} />
 		{:else if kind === 'csv'}
 			<CsvViewer {path} />
+		{:else if kind === 'pdf'}
+			{#key path}
+				<PdfViewer src={`/api/fs/raw?path=${encodeURIComponent(path)}`} />
+			{/key}
 		{:else if kind === 'tex'}
 			<div
 				bind:this={texSplitEl}

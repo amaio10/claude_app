@@ -102,6 +102,39 @@ function configure() {
 	marked.use({ gfm: true, breaks: true });
 }
 
+// With `breaks: true`, marked won't tokenize a `$$` block when it sits
+// directly under a non-empty line — it stays inside the paragraph. Insert
+// blank lines around standalone `$$` delimiters so the math extension fires.
+function padBlockMath(src: string): string {
+	const lines = src.split('\n');
+	const out: string[] = [];
+	let inMath = false;
+	let inFence = false;
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		const trimmed = line.trim();
+		if (!inMath && /^(```|~~~)/.test(trimmed)) {
+			inFence = !inFence;
+			out.push(line);
+			continue;
+		}
+		if (!inFence && trimmed === '$$') {
+			if (!inMath) {
+				if (out.length && out[out.length - 1].trim() !== '') out.push('');
+				out.push(line);
+				inMath = true;
+			} else {
+				out.push(line);
+				inMath = false;
+				if (i + 1 < lines.length && lines[i + 1].trim() !== '') out.push('');
+			}
+			continue;
+		}
+		out.push(line);
+	}
+	return out.join('\n');
+}
+
 function escape(s: string): string {
 	return s
 		.replace(/&/g, '&amp;')
@@ -155,7 +188,7 @@ export async function renderMarkdown(source: string): Promise<string> {
 	configure();
 	installHooks();
 	if (!source) return '';
-	const raw = await marked.parse(source, { async: true });
+	const raw = await marked.parse(padBlockMath(source), { async: true });
 	return DOMPurify.sanitize(String(raw), SANITIZE_CFG) as unknown as string;
 }
 
@@ -163,6 +196,6 @@ export function renderMarkdownSync(source: string): string {
 	configure();
 	installHooks();
 	if (!source) return '';
-	const raw = marked.parse(source, { async: false }) as string;
+	const raw = marked.parse(padBlockMath(source), { async: false }) as string;
 	return DOMPurify.sanitize(String(raw), SANITIZE_CFG) as unknown as string;
 }
